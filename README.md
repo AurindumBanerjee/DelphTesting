@@ -45,6 +45,20 @@ question ──embed──> similarity search ──top-k passages──> LLM �
 - **semantic** — embeds sentences and cuts where meaning shifts most (95th-percentile distance). Costs one embedding pass; free here because embeddings are local.
 - **markdown** — splits on `#` headings, preserving section hierarchy. Only useful for documents that have them.
 
+## Benchmark
+
+The three chunking strategies exist to be compared, so there is a harness that
+compares them:
+
+```bash
+python eval/run_eval.py
+```
+
+It sweeps method x chunk size x k over a question set whose ground truth is a
+verbatim span (chunking-invariant, so one set measures every configuration) and
+reports hit@k, MRR, precision@k and nDCG@k as a markdown table. Embeddings are
+local, so the sweep is free and runs offline. See [`eval/README.md`](eval/README.md).
+
 ## Configuration
 
 Copy `.env.example` to `.env` (locally) or set these as Space secrets:
