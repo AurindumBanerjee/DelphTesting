@@ -1,134 +1,92 @@
 ---
 title: Delphion
-app_file: ui.py
+emoji: 📄
+colorFrom: indigo
+colorTo: blue
 sdk: gradio
 sdk_version: 5.33.0
+app_file: app.py
+pinned: false
+license: mit
+short_description: Ask questions across your PDFs, with cited answers.
 ---
+
 # Delphion
 
-Delphion is a modular Retrieval-Augmented Generation (RAG) system based on the **Model Context Protocol (MCP)**. It integrates LLM-based agents (retriever, embedder, generator), document ingestion, vector search, and a testable Gradio UI.
+Retrieval-Augmented Generation over PDFs. Upload documents, ask questions, get
+answers that cite the passage and page they came from.
 
----
+Runs on a free CPU Space: embeddings are computed locally, the index is
+in-memory, and generation goes to any OpenAI-compatible endpoint.
 
-## 🚀 Deployment with Modal
+## How it works
 
-You can deploy the entire system on [Modal](https://modal.com/) using just:
+```
+PDF ──PyMuPDF──> page Documents ──chunker──> chunks
+                                               │
+                              fastembed (bge-small, CPU, in-process)
+                                               │
+                                      in-memory Chroma index
+                                               │
+question ──embed──> similarity search ──top-k passages──> LLM ──> cited answer
+```
+
+| Stage | Module | Notes |
+|---|---|---|
+| Extract | `src/extract_from_pdf.py` | PyMuPDF, one Document per page; attaches `source`/`page`/`title` for citations |
+| Chunk | `src/chunking/` | three interchangeable strategies behind `ChunkingFactory` |
+| Embed | `src/models.py` | `bge-small-en-v1.5` via fastembed (ONNX, no torch) |
+| Index | `src/vectorstore.py` | Chroma, in-memory, session-scoped |
+| Answer | `src/rag.py` | numbered context passages, inline `[n]` citations |
+
+## Chunking strategies
+
+- **recursive** — splits on paragraph → line → sentence → word boundaries. General default.
+- **semantic** — embeds sentences and cuts where meaning shifts most (95th-percentile distance). Costs one embedding pass; free here because embeddings are local.
+- **markdown** — splits on `#` headings, preserving section hierarchy. Only useful for documents that have them.
+
+## Configuration
+
+Copy `.env.example` to `.env` (locally) or set these as Space secrets:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LLM_BASE_URL` | Groq | any OpenAI-compatible endpoint |
+| `LLM_MODEL` | `llama-3.3-70b-versatile` | check your provider's current model list |
+| `LLM_API_KEY` | — | not needed for local Ollama/vLLM |
+| `EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | changing it invalidates any existing index |
+| `DEFAULT_K` | `4` | passages retrieved per question |
+
+Retrieval works without an LLM key — you will get the passages, just not a
+generated answer.
+
+## Run locally
 
 ```bash
-modal serve stub.py
+pip install -r requirements.txt
+cp .env.example .env    # add your key
+python app.py
 ```
 
-This will:
+## Repository history
 
-- Clone the Delphion GitHub repo into the Modal container
-- Install dependencies via `requirements.txt`
-- Start a FastAPI app exposing all three MCP tools:
-  - `POST /embed/embed` – document embedding
-  - `POST /retriever/retriever` – semantic search
-  - `POST /generate/generate` – prompt-based response generation
+Earlier iterations are kept under `legacy/` for reference:
 
----
+- `legacy/v1-gradio-monolith/` — the original single-file Gradio app using the OpenAI API
+- `legacy/v2-modal-mcp/` — the FastAPI microservice split (embedder/retriever/generator) deployed on Modal
 
-## 🛡️ Set Your API Key (securely)
+Each folder has a `README.md` (file-by-file reference) and a `BREAKDOWN.html`
+(annotated walkthrough with diagrams). The v2 code also lives, unmodified and
+still runnable, in the companion repository
+[Delphion](https://github.com/AurindumBanerjee/Delphion), which is preserved as
+the record of the Modal deployment.
 
-For production or Modal cloud deployment:
+Both are archived, not maintained. The Modal version stored its Chroma index on
+container-local disk while Modal autoscaled containers, so ingestion and
+retrieval could land in different containers and retrieval would silently return
+nothing. Collapsing to a single process with an in-memory index removed that
+class of bug by construction.
 
-1. Store your OpenAI API key securely:
+## License
 
-```bash
-modal secret create delphion-secrets OPENAI_API_KEY= "Insert your key here"
-```
-
-2. `stub.py` will automatically read it using:
-
-```python
-os.environ["OPENAI_API_KEY"]
-```
-
-For local development, use a `.env` file in the root:
-
-```env
-OPENAI_API_KEY=sk-...
-```
-
----
-
-## 🧪 Testing with Gradio UI
-
-You can run the UI client locally to test all 3 agents:
-
-1. Edit the base URL in `test.py`:
-
-```python
-BASE_API = "http://localhost:8000"  # or your deployed URL
-```
-
-2. Run:
-
-```bash
-python test.py
-```
-
-3. The UI lets you:
-- 📎 Upload PDFs to `/embed/embed`
-- ❓ Ask questions to `/retriever/retriever`
-- 🧠 Send prompts to `/generate/generate`
-
----
-
-## 🧠 Architecture Overview
-
-```text
-User Query
-   │
-   ▼
-Gradio UI / API Client
-   │
-   ▼
-[Modal Deployed FastAPI]
-   ├──▶ /embed/embed      → vector index via FAISS/Chroma
-   ├──▶ /retriever/retriever → semantic search
-   └──▶ /generate/generate → LLM generation via OpenAI
-```
-
----
-
-## 🧱 Technologies Used
-
-- 🧠 OpenAI (LLMs + embeddings)
-- 🦜 LangChain + ChromaDB (vectorstore)
-- 🧬 FastAPI (agent APIs)
-- 🖼️ Gradio (testing UI)
-- 🧊 Modal (GPU / cloud backend)
-- 📄 PDF ingestion with PyMuPDF
-
----
-
-## 🧰 Run Locally (Advanced Dev Only)
-
-You can also run the services individually:
-
-```bash
-# Embedder
-uvicorn mcp.embedder:app --port 8001
-
-# Retriever
-uvicorn mcp.retriever:app --port 8002
-
-# Generator
-uvicorn mcp.generator:app --port 8003
-```
-
-Then adjust the `test.py` URLs accordingly.
-
----
-
-## 📜 License
-
-MIT License. Attribution required for public use or distribution.
-
----
-
-## 📣 Credits
-
-Delphion is inspired by the Oracle of Delphi — designed to extract structured knowledge from unstructured documents via LLM agents.
+MIT
