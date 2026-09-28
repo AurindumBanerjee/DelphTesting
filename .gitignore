@@ -3,3 +3,8 @@ __pycache__/
 .gradio/
 chroma_db/
 *.pyc
+
+eval/results/
+eval/corpus/*.pdf
+eval/questions.json
+eval/questions.draft.json
