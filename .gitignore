@@ -1,3 +1,5 @@
 .env
-bob
 __pycache__/
+.gradio/
+chroma_db/
+*.pyc
