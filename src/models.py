@@ -6,7 +6,7 @@ Two seams, so switching vendors is a config change and never a code change:
 """
 
 from functools import lru_cache
-from typing import List
+from typing import Iterator, List
 
 from langchain_core.embeddings import Embeddings
 
@@ -39,6 +39,34 @@ def get_embeddings() -> Embeddings:
     return FastEmbedEmbeddings(settings.embed_model)
 
 
+class FastEmbedReranker:
+    """Cross-encoder reranker (ONNX, CPU). Reads query and passage together,
+    so it judges relevance far better than comparing two separate vectors.
+    ms-marco-MiniLM-L-6 is ~80MB and scores 20 pairs in well under a second."""
+
+    def __init__(self, model_name: str):
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+        self.model_name = model_name
+        self._model = TextCrossEncoder(model_name=model_name)
+
+    def rerank(self, query: str, documents: List[str]) -> List[float]:
+        return list(self._model.rerank(query, documents))
+
+
+@lru_cache(maxsize=1)
+def get_reranker():
+    """Loaded once per process. Returns None (and the app degrades to plain
+    hybrid retrieval) if the model cannot be loaded."""
+    try:
+        return FastEmbedReranker(settings.rerank_model)
+    except Exception as exc:  # pragma: no cover - network/model availability
+        from loguru import logger
+
+        logger.warning(f"Reranker unavailable ({exc}); falling back to hybrid without rerank")
+        return None
+
+
 @lru_cache(maxsize=1)
 def _client():
     from openai import OpenAI
@@ -60,3 +88,19 @@ def chat(system_prompt: str, user_prompt: str) -> str:
         ],
     )
     return completion.choices[0].message.content
+
+
+def chat_stream(system_prompt: str, user_prompt: str) -> Iterator[str]:
+    """Streaming variant: yields text deltas as the model produces them."""
+    stream = _client().chat.completions.create(
+        model=settings.llm_model,
+        temperature=settings.temperature,
+        stream=True,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    for event in stream:
+        if event.choices and event.choices[0].delta and event.choices[0].delta.content:
+            yield event.choices[0].delta.content

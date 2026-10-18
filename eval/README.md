@@ -14,6 +14,17 @@ python eval/run_eval.py                        # runs the sweep — free, local,
 Output goes to `eval/results/<timestamp>.{md,json}` and `eval/results/latest.md`.
 The markdown table is meant to be pasted straight into the root README.
 
+## Retrieval modes
+
+Each chunking configuration is indexed once and queried four ways — `dense`,
+`bm25`, `hybrid` (RRF) and `hybrid_rerank` — so the before/after comparison
+holds chunking constant and isolates the retrieval change. Pick a subset with
+`--modes dense hybrid_rerank`. The run also writes the results table into the
+root README between the `BENCHMARK` markers.
+
+`--judge` adds answer-level scoring (needs an LLM key): correctness against the
+reference span and faithfulness (every claim supported by the passages).
+
 ## Ground truth is a span, not a chunk id
 
 Each question carries a short **verbatim substring** of the source document:

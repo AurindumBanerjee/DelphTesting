@@ -16,19 +16,23 @@ short_description: Ask questions across your PDFs, with cited answers.
 Retrieval-Augmented Generation over PDFs. Upload documents, ask questions, get
 answers that cite the passage and page they came from.
 
-Runs on a free CPU Space: embeddings are computed locally, the index is
-in-memory, and generation goes to any OpenAI-compatible endpoint.
+Runs on a free CPU Space: embeddings and reranking are computed locally, the
+index is in-memory, retrieval is hybrid (BM25 + dense, fused and reranked), and
+answers stream from any OpenAI-compatible endpoint.
 
 ## How it works
 
 ```
 PDF ──PyMuPDF──> page Documents ──chunker──> chunks
                                                │
-                              fastembed (bge-small, CPU, in-process)
+                         dedupe ──┬── fastembed bge-small ──> Chroma (dense)
+                                  └── tokenize ─────────────> BM25 (lexical)
                                                │
-                                      in-memory Chroma index
-                                               │
-question ──embed──> similarity search ──top-k passages──> LLM ──> cited answer
+question ──> dense top-20 ─┐
+         └─> BM25 top-20 ──┴─> Reciprocal Rank Fusion ──> cross-encoder rerank
+                                                              │ top-k
+                                                              ▼
+                                         numbered passages ──> LLM ──stream──> cited answer
 ```
 
 | Stage | Module | Notes |
@@ -36,8 +40,18 @@ question ──embed──> similarity search ──top-k passages──> LLM �
 | Extract | `src/extract_from_pdf.py` | PyMuPDF, one Document per page; attaches `source`/`page`/`title` for citations |
 | Chunk | `src/chunking/` | three interchangeable strategies behind `ChunkingFactory` |
 | Embed | `src/models.py` | `bge-small-en-v1.5` via fastembed (ONNX, no torch) |
-| Index | `src/vectorstore.py` | Chroma, in-memory, session-scoped |
-| Answer | `src/rag.py` | numbered context passages, inline `[n]` citations |
+| Index | `src/retrieval.py` | `HybridIndex`: Chroma (cosine) + BM25, content-hash dedupe, session-scoped |
+| Retrieve | `src/retrieval.py` | `dense` / `bm25` / `hybrid` (RRF, k=60) / `hybrid_rerank` (ms-marco-MiniLM cross-encoder over top-20) |
+| Answer | `src/rag.py` | numbered context passages, inline `[n]` citations, token streaming |
+
+## Why hybrid retrieval
+
+Dense embeddings match meaning but blur rare, exact terms — names, numbers,
+jargon, archaic medical vocabulary. BM25 is the mirror image. Reciprocal Rank
+Fusion merges the two rankings using ranks only (no score calibration needed),
+and a cross-encoder then reads each (question, passage) pair together to pick
+the final order. The reranker only sees 20 candidates, so it adds milliseconds,
+not seconds. All four modes are selectable in the UI and measured below.
 
 ## Chunking strategies
 
@@ -59,6 +73,24 @@ verbatim span (chunking-invariant, so one set measures every configuration) and
 reports hit@k, MRR, precision@k and nDCG@k as a markdown table. Embeddings are
 local, so the sweep is free and runs offline. See [`eval/README.md`](eval/README.md).
 
+## Results
+
+Corpus: three books (≈1,100 pages, 2.7M characters) — *Lessons from
+Neuroscience for AI*, *The Society of Mind*, and Hahnemann's *Materia Medica*.
+42 hand-written questions, each with a verbatim answer span verified against
+the PDF (`eval/questions.json`).
+
+Run it yourself: `run_benchmark.bat` (Windows) or `python eval/run_eval.py`.
+
+<!-- BENCHMARK:START -->
+_Pending first run — `run_benchmark.bat` fills this in automatically._
+<!-- BENCHMARK:END -->
+
+**Caveat on the question set.** Questions were written from sampled passages
+and, despite paraphrasing, share key terms with their answers. That favours
+lexical matching, so BM25's numbers here are an upper bound for it, not a
+general claim that BM25 beats embeddings.
+
 ## Configuration
 
 Copy `.env.example` to `.env` (locally) or set these as Space secrets:
@@ -70,9 +102,27 @@ Copy `.env.example` to `.env` (locally) or set these as Space secrets:
 | `LLM_API_KEY` | — | not needed for local Ollama/vLLM |
 | `EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | changing it invalidates any existing index |
 | `DEFAULT_K` | `4` | passages retrieved per question |
+| `RETRIEVAL_MODE` | `hybrid_rerank` | `dense`, `bm25`, `hybrid`, or `hybrid_rerank` |
+| `RERANK_MODEL` | `Xenova/ms-marco-MiniLM-L-6-v2` | any fastembed cross-encoder |
+| `RERANK_CANDIDATES` | `20` | fused candidates passed to the reranker |
 
 Retrieval works without an LLM key — you will get the passages, just not a
 generated answer.
+
+## Getting a Groq key
+
+Generation needs an LLM endpoint; Groq's free tier is the default.
+
+1. Go to <https://console.groq.com> and sign in (Google or GitHub works).
+2. Open **API Keys** → **Create API Key**, name it `delphion`, and copy it
+   (it starts with `gsk_` and is shown only once).
+3. Locally: `copy .env.example .env` and set `LLM_API_KEY=gsk_...`.
+   On a Space: **Settings → Variables and secrets → New secret**, name
+   `LLM_API_KEY`.
+4. If `llama-3.3-70b-versatile` has been retired, pick a current model from
+   <https://console.groq.com/docs/models> and set `LLM_MODEL`.
+
+Never commit `.env` — it is already in `.gitignore`.
 
 ## Run locally
 
@@ -82,6 +132,16 @@ cp .env.example .env    # add your key
 python app.py
 ```
 
+## Tests
+
+```bash
+pip install pytest && pytest -q
+```
+
+The suite uses offline fakes (hashed embeddings, word-overlap reranker), so it
+runs in CI without downloading models. GitHub Actions runs lint + tests on every
+push.
+
 ## Repository history
 
 Earlier iterations are kept under `legacy/` for reference:
@@ -90,10 +150,9 @@ Earlier iterations are kept under `legacy/` for reference:
 - `legacy/v2-modal-mcp/` — the FastAPI microservice split (embedder/retriever/generator) deployed on Modal
 
 Each folder has a `README.md` (file-by-file reference) and a `BREAKDOWN.html`
-(annotated walkthrough with diagrams). The v2 code also lives, unmodified and
-still runnable, in the companion repository
-[Delphion](https://github.com/AurindumBanerjee/Delphion), which is preserved as
-the record of the Modal deployment.
+(annotated walkthrough with diagrams). `legacy/v2-modal-mcp/` holds the complete
+v2 source (services, `src/`, UI, requirements), and the git tag `v2-modal-mcp`
+points at the last commit where v2 was the repository root.
 
 Both are archived, not maintained. The Modal version stored its Chroma index on
 container-local disk while Modal autoscaled containers, so ingestion and

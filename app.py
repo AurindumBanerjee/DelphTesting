@@ -3,6 +3,8 @@
 Single-process Gradio app, sized for a free Hugging Face Space:
   * embeddings run locally on CPU (no key, no cost)
   * the vector index is in-memory and scoped to your browser session
+  * retrieval is hybrid: BM25 + dense vectors fused with RRF, then reranked
+  * answers stream token by token
   * generation goes to any OpenAI-compatible endpoint you configure
 """
 
@@ -13,7 +15,8 @@ from loguru import logger
 from src.chunking.chunking_factory import ChunkingFactory
 from src.config import DEFAULT_SYSTEM_PROMPT, settings
 from src.extract_from_pdf import load_and_chunk
-from src.rag import answer
+from src.rag import answer_stream
+from src.retrieval import MODES
 from src.vectorstore import build_vectorstore
 
 load_dotenv()
@@ -40,15 +43,26 @@ def ingest(files, method, size, overlap):
         return None, f"Ingestion failed: {exc}"
 
 
-def ask(question, history, store, k, system_prompt):
+MODE_LABELS = {
+    "hybrid_rerank": "Hybrid + rerank (best)",
+    "hybrid": "Hybrid (BM25 + dense)",
+    "dense": "Dense only",
+    "bm25": "BM25 only",
+}
+
+
+def ask(question, history, store, k, system_prompt, mode):
+    """Generator: Gradio re-renders on every yield, so the answer streams in."""
     if not question.strip():
-        return history, "", ""
-    reply, sources = answer(store, question, int(k), system_prompt)
+        yield history, "", ""
+        return
     history = (history or []) + [
         {"role": "user", "content": question},
-        {"role": "assistant", "content": reply},
+        {"role": "assistant", "content": ""},
     ]
-    return history, "", sources
+    for partial, sources in answer_stream(store, question, int(k), system_prompt, mode):
+        history[-1]["content"] = partial
+        yield history, "", sources
 
 
 with gr.Blocks(theme=gr.themes.Soft(), title="Delphion") as demo:
@@ -70,6 +84,11 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Delphion") as demo:
             size = gr.Slider(250, 2000, value=1000, step=250, label="Chunk size")
             overlap = gr.Slider(0, 500, value=200, step=50, label="Chunk overlap")
             top_k = gr.Slider(1, 10, value=settings.default_k, step=1, label="Passages to retrieve")
+            mode = gr.Dropdown(
+                choices=[(MODE_LABELS[m], m) for m in MODES if m in MODE_LABELS],
+                value=settings.retrieval_mode,
+                label="Retrieval mode",
+            )
             status = gr.Markdown("No documents indexed yet.")
             with gr.Accordion("System prompt", open=False):
                 system_prompt = gr.Textbox(
@@ -100,7 +119,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Delphion") as demo:
 
     ask_args = dict(
         fn=ask,
-        inputs=[question, chatbot, store_state, top_k, system_prompt],
+        inputs=[question, chatbot, store_state, top_k, system_prompt, mode],
         outputs=[chatbot, question, sources],
     )
     question.submit(**ask_args)
