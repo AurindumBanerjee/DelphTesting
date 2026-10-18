@@ -6,5 +6,8 @@ chroma_db/
 
 eval/results/
 eval/corpus/*.pdf
-eval/questions.json
 eval/questions.draft.json
+
+# Source books are copyrighted and large; keep them local
+books/
+.venv/
