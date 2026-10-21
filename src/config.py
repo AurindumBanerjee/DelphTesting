@@ -2,6 +2,7 @@
 locally, on a Hugging Face Space, or against a local Ollama instance."""
 
 import os
+import tempfile
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -15,11 +16,20 @@ load_dotenv()
 class Settings:
     # --- Embeddings (runs in-process on CPU, no API key, no cost) ---
     embed_model: str = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+    # Writable dir for the ONNX models (downloaded on first start). The default
+    # is the OS temp dir, which is writable on a Space; it is not persistent.
+    model_cache_dir: str = os.getenv(
+        "MODEL_CACHE_DIR", os.path.join(tempfile.gettempdir(), "delphion-models")
+    )
+    # Keeps CPU and memory low: a free Space has 2 vCPUs, and a shared dev
+    # machine should not be saturated by one embedding run.
+    onnx_threads: int = int(os.getenv("ONNX_THREADS", "2"))
+    embed_batch_size: int = int(os.getenv("EMBED_BATCH_SIZE", "32"))
 
     # --- Generation (any OpenAI-compatible endpoint) ---
     # Groq / OpenRouter / Together / Google AI Studio / local Ollama all work.
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    llm_model: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+    llm_model: str = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     temperature: float = float(os.getenv("LLM_TEMPERATURE", "0"))
 
